@@ -38,7 +38,7 @@
   <button id="connect">连接直播</button>
   <button id="disconnect" disabled>断开</button>
 
-  <p id="status">点击“连接直播”后等待孩子上线。</p>
+  <p id="status">点击“连接直播”后等待对方上线。</p>
 
   <video id="remoteVideo" autoplay controls playsinline></video>
 
@@ -110,7 +110,7 @@ function connect() {
       role: "parent"
     });
 
-    status("已连接服务器，等待孩子开始直播……");
+    status("已连接服务器，等待中……");
   };
 
   socket.onmessage = async event => {
@@ -137,7 +137,7 @@ function connect() {
         sdp: peer.localDescription
       });
 
-      status("正在连接孩子端……");
+      status("正在连接……");
     }
 
     if (message.type === "candidate") {
@@ -153,7 +153,7 @@ function connect() {
     }
 
     if (message.type === "stop") {
-      status("孩子已停止直播。");
+      status("停止直播。");
       remoteVideo.srcObject = null;
 
       if (peer) {
@@ -163,7 +163,7 @@ function connect() {
     }
 
     if (message.type === "peer-left") {
-      status("孩子端已离开。");
+      status("已离开。");
       remoteVideo.srcObject = null;
     }
   };
