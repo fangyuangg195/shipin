@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>孩子端安全直播</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 700px;
+      margin: 30px auto;
+      padding: 0 16px;
+    }
+
+    button {
+      font-size: 18px;
+      padding: 12px 18px;
+      margin: 8px 4px 8px 0;
+    }
+
+    video {
+      width: 100%;
+      background: #111;
+      border-radius: 12px;
+      margin-top: 15px;
+    }
+
+    #status {
+      white-space: pre-wrap;
+      color: #555;
+    }
+
+    .notice {
+      background: #fff4cc;
+      border-radius: 8px;
+      padding: 12px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>孩子端安全直播</h2>
+
+  <div class="notice">
+    点击“开始直播”后，摄像头和麦克风才会开启。直播期间浏览器会显示摄像头和麦克风正在使用。
+  </div>
+
+  <button id="start">开始直播</button>
+  <button id="stop" disabled>停止直播</button>
+
+  <p id="status">等待开始</p>
+
+  <video id="preview" autoplay muted playsinline></video>
+
+<script>
+const WORKER_URL =
+  "https://替换成你的-worker地址.workers.dev";
+
+const ROOM_PASSWORD = "123";
+
+let socket = null;
+let stream = null;
+let peer = null;
+let parentReady = false;
+
+const startButton = document.getElementById("start");
+const stopButton = document.getElementById("stop");
+const preview = document.getElementById("preview");
+const statusText = document.getElementById("status");
+
+function status(text) {
+  statusText.textContent = text;
+}
+
+function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
+}
+
+function makePeer() {
+  peer = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
+  });
+
+  stream.getTracks().forEach(track => {
+    peer.addTrack(track, stream);
+  });
+
+  peer.onicecandidate = event => {
+    if (event.candidate) {
+      send({
+        type: "candidate",
+        candidate: event.candidate
+      });
+    }
+  };
+
+  peer.onconnectionstatechange = () => {
+    status("连接状态：" + peer.connectionState);
+  };
+}
+
+async function startLive() {
+  try {
+    startButton.disabled = true;
+    status("正在请求摄像头和麦克风权限……");
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+
+    preview.srcObject = stream;
+
+    socket = new WebSocket(
+      WORKER_URL.replace(/^http/, "ws") +
+      "/room/" + encodeURIComponent(ROOM_PASSWORD)
+    );
+
+    socket.onopen = () => {
+      send({ type: "role", role: "child" });
+      status("直播已启动，等待家长打开页面……");
+      stopButton.disabled = false;
+    };
+
+    socket.onmessage = async event => {
+      const message = JSON.parse(event.data);
+
+      if (message.type === "role" && message.role === "parent") {
+        parentReady = true;
+
+        makePeer();
+
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+
+        send({
+          type: "offer",
+          sdp: peer.localDescription
+        });
+
+        status("已找到家长，正在建立视频连接……");
+      }
+
+      if (message.type === "answer") {
+        await peer.setRemoteDescription(
+          new RTCSessionDescription(message.sdp)
+        );
+      }
+
+      if (message.type === "candidate" && peer) {
+        try {
+          await peer.addIceCandidate(message.candidate);
+        } catch (error) {
+          console.log("ICE candidate error", error);
+        }
+      }
+
+      if (message.type === "peer-left") {
+        status("家长已离开，直播仍在运行。");
+      }
+    };
+
+    socket.onerror = () => {
+      status("信令服务器连接失败。");
+    };
+
+    socket.onclose = () => {
+      status("连接已关闭。");
+    };
+
+  } catch (error) {
+    startButton.disabled = false;
+    status("无法启动：" + error.name);
+  }
+}
+
+function stopLive() {
+  if (peer) {
+    peer.close();
+    peer = null;
+  }
+
+  if (socket) {
+    send({ type: "stop" });
+    socket.close();
+    socket = null;
+  }
+
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+
+  preview.srcObject = null;
+  startButton.disabled = false;
+  stopButton.disabled = true;
+  status("直播已停止，摄像头和麦克风已关闭。");
+}
+
+startButton.onclick = startLive;
+stopButton.onclick = stopLive;
+</script>
+</body>
+</html>
+

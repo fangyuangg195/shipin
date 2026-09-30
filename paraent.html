@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>家长端安全直播</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 30px auto;
+      padding: 0 16px;
+    }
+
+    button {
+      font-size: 18px;
+      padding: 12px 18px;
+      margin: 8px 4px 8px 0;
+    }
+
+    video {
+      width: 100%;
+      background: #111;
+      border-radius: 12px;
+      margin-top: 15px;
+    }
+
+    #status {
+      white-space: pre-wrap;
+      color: #555;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>家长端安全直播</h2>
+
+  <button id="connect">连接直播</button>
+  <button id="disconnect" disabled>断开</button>
+
+  <p id="status">点击“连接直播”后等待孩子上线。</p>
+
+  <video id="remoteVideo" autoplay controls playsinline></video>
+
+<script>
+const WORKER_URL =
+  "https://替换成你的-worker地址.workers.dev";
+
+const ROOM_PASSWORD = "123";
+
+let socket = null;
+let peer = null;
+let pendingCandidates = [];
+
+const connectButton = document.getElementById("connect");
+const disconnectButton = document.getElementById("disconnect");
+const remoteVideo = document.getElementById("remoteVideo");
+const statusText = document.getElementById("status");
+
+function status(text) {
+  statusText.textContent = text;
+}
+
+function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
+}
+
+function makePeer() {
+  peer = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
+  });
+
+  peer.ontrack = event => {
+    if (event.streams && event.streams[0]) {
+      remoteVideo.srcObject = event.streams[0];
+      status("已连接，可以看到画面并听到声音。");
+    }
+  };
+
+  peer.onicecandidate = event => {
+    if (event.candidate) {
+      send({
+        type: "candidate",
+        candidate: event.candidate
+      });
+    }
+  };
+
+  peer.onconnectionstatechange = () => {
+    status("连接状态：" + peer.connectionState);
+  };
+}
+
+function connect() {
+  connectButton.disabled = true;
+  disconnectButton.disabled = false;
+
+  socket = new WebSocket(
+    WORKER_URL.replace(/^http/, "ws") +
+    "/room/" + encodeURIComponent(ROOM_PASSWORD)
+  );
+
+  socket.onopen = () => {
+    send({
+      type: "role",
+      role: "parent"
+    });
+
+    status("已连接服务器，等待孩子开始直播……");
+  };
+
+  socket.onmessage = async event => {
+    const message = JSON.parse(event.data);
+
+    if (message.type === "offer") {
+      makePeer();
+
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(message.sdp)
+      );
+
+      for (const candidate of pendingCandidates) {
+        await peer.addIceCandidate(candidate);
+      }
+
+      pendingCandidates = [];
+
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+
+      send({
+        type: "answer",
+        sdp: peer.localDescription
+      });
+
+      status("正在连接孩子端……");
+    }
+
+    if (message.type === "candidate") {
+      if (peer && peer.remoteDescription) {
+        try {
+          await peer.addIceCandidate(message.candidate);
+        } catch (error) {
+          console.log("ICE candidate error", error);
+        }
+      } else {
+        pendingCandidates.push(message.candidate);
+      }
+    }
+
+    if (message.type === "stop") {
+      status("孩子已停止直播。");
+      remoteVideo.srcObject = null;
+
+      if (peer) {
+        peer.close();
+        peer = null;
+      }
+    }
+
+    if (message.type === "peer-left") {
+      status("孩子端已离开。");
+      remoteVideo.srcObject = null;
+    }
+  };
+
+  socket.onerror = () => {
+    status("信令服务器连接失败。");
+  };
+
+  socket.onclose = () => {
+    status("连接已关闭。");
+  };
+}
+
+function disconnect() {
+  if (peer) {
+    peer.close();
+    peer = null;
+  }
+
+  if (socket) {
+    socket.close();
+    socket = null;
+  }
+
+  remoteVideo.srcObject = null;
+  connectButton.disabled = false;
+  disconnectButton.disabled = true;
+  status("已断开。");
+}
+
+connectButton.onclick = connect;
+disconnectButton.onclick = disconnect;
+</script>
+</body>
+</html>
