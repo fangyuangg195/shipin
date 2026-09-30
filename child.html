@@ -43,11 +43,11 @@
   <h2>抖音天团直播</h2>
 
   <div class="notice">
-    点击“开始直播”后，摄像头和麦克风才会开启。直播期间浏览器会显示摄像头和麦克风正在使用。
+    点击“开始连接”后，需要点看到摄像头和麦克风的允许才会开启。
   </div>
 
-  <button id="start">开始直播</button>
-  <button id="stop" disabled>停止直播</button>
+  <button id="start">开始连接</button>
+  <button id="stop" disabled>停止连接</button>
 
   <p id="status">等待开始</p>
 
@@ -123,7 +123,7 @@ async function startLive() {
 
     socket.onopen = () => {
       send({ type: "role", role: "child" });
-      status("直播已启动，等待家长打开页面……");
+      status("正在连接中，等待天团开启画面……");
       stopButton.disabled = false;
     };
 
@@ -199,7 +199,7 @@ function stopLive() {
   preview.srcObject = null;
   startButton.disabled = false;
   stopButton.disabled = true;
-  status("直播已停止，摄像头和麦克风已关闭。");
+  status("连接已停止");
 }
 
 startButton.onclick = startLive;
