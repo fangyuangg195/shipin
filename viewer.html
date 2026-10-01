@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>【接收端】抖音天团直播</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:30px auto;padding:0 16px}
+  h2{color:#2471a3}
+  button{font-size:18px;padding:12px 18px;margin:8px 4px 8px 0}
+  video{width:100%;background:#111;border-radius:12px;margin-top:15px}
+  #status{white-space:pre-wrap;color:#555}
+  .notice{background:#d6eaf8;border-radius:8px;padding:12px;line-height:1.6}
+</style>
+</head>
+<body>
+<h2>📺 接收端（只观看，不需要摄像头）</h2>
+<div class="notice">点击“连接直播”后等待发送端上线。发送端请用手机打开【发送端】页面。</div>
+<button id="connect">连接直播</button>
+<button id="disconnect" disabled>断开</button>
+<p id="status">点击“连接直播”开始。</p>
+<video id="remoteVideo" autoplay controls playsinline></video>
+
+<script>
+const WORKER_URL = "https://508.fangyuangg195.workers.dev";
+const ROOM_PASSWORD = "123";
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" }
+  // 跨网络建议加 TURN，两个页面都要加：
+  // { urls: "turn:你的TURN地址:443?transport=tcp", username: "xxx", credential: "xxx" }
+];
+
+let socket = null, peer = null, pendingCandidates = [];
+
+const connectButton = document.getElementById("connect");
+const disconnectButton = document.getElementById("disconnect");
+const remoteVideo = document.getElementById("remoteVideo");
+const statusText = document.getElementById("status");
+
+const status = t => { statusText.textContent = t; };
+const send = d => { if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(d)); };
+
+function closePeer() {
+  if (peer) { peer.close(); peer = null; }
+  pendingCandidates = [];
+  remoteVideo.srcObject = null;
+}
+
+function makePeer() {
+  closePeer();
+  peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+  peer.ontrack = e => {
+    remoteVideo.srcObject = e.streams[0] || new MediaStream([e.track]);
+    remoteVideo.play().catch(() => status("画面已到达，请点一下视频上的播放按钮。"));
+    status("已连接，可以看到画面。");
+  };
+  peer.onicecandidate = e => { if (e.candidate) send({ type: "candidate", candidate: e.candidate }); };
+  peer.oniceconnectionstatechange = () => console.log("ICE:", peer && peer.iceConnectionState);
+  peer.onconnectionstatechange = () => {
+    status("连接状态：" + peer.connectionState);
+    console.log("connection:", peer.connectionState);
+  };
+}
+
+function connect() {
+  connectButton.disabled = true;
+  disconnectButton.disabled = false;
+
+  socket = new WebSocket(WORKER_URL.replace(/^http/, "ws") + "/room/" + encodeURIComponent(ROOM_PASSWORD));
+
+  socket.onopen = () => {
+    send({ type: "role", role: "parent" });
+    status("已连接服务器，等待发送端上线……");
+  };
+
+  socket.onmessage = async ev => {
+    const msg = JSON.parse(ev.data);
+
+    if (msg.type === "offer") {
+      makePeer();
+      await peer.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+      for (const c of pendingCandidates) { try { await peer.addIceCandidate(c); } catch (e) {} }
+      pendingCandidates = [];
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      send({ type: "answer", sdp: peer.localDescription });
+      status("正在连接……");
+    }
+
+    if (msg.type === "candidate") {
+      if (peer && peer.remoteDescription) {
+        try { await peer.addIceCandidate(msg.candidate); } catch (e) { console.log("ICE error", e); }
+      } else pendingCandidates.push(msg.candidate);
+    }
+
+    if (msg.type === "stop") { status("发送端已停止直播。"); closePeer(); }
+    if (msg.type === "peer-left") { status("发送端已离开，等待重新上线……"); closePeer(); }
+  };
+
+  socket.onerror = () => status("信令服务器连接失败。");
+  socket.onclose = () => status("连接已关闭。");
+}
+
+function disconnect() {
+  closePeer();
+  if (socket) { socket.close(); socket = null; }
+  connectButton.disabled = false;
+  disconnectButton.disabled = true;
+  status("已断开。");
+}
+
+connectButton.onclick = connect;
+disconnectButton.onclick = disconnect;
+</script>
+</body>
+</html>
