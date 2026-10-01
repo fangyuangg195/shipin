@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>【发送端】抖音天团直播</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:700px;margin:30px auto;padding:0 16px}
+  h2{color:#c0392b}
+  button{font-size:18px;padding:12px 18px;margin:8px 4px 8px 0}
+  video{width:100%;background:#111;border-radius:12px;margin-top:15px}
+  #status{white-space:pre-wrap;color:#555}
+  .notice{background:#fff4cc;border-radius:8px;padding:12px;line-height:1.6}
+</style>
+</head>
+<body>
+<h2>📹 发送端（有摄像头的设备用）</h2>
+<div class="notice">点击“开始直播”后，请允许使用摄像头和麦克风。<br>没有摄像头的电脑请打开【接收端】页面。</div>
+<button id="start">开始直播</button>
+<button id="stop" disabled>停止直播</button>
+<p id="status">等待开始</p>
+<video id="preview" autoplay muted playsinline></video>
+
+<script>
+const WORKER_URL = "https://508.fangyuangg195.workers.dev";
+const ROOM_PASSWORD = "123";
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" }
+  // 跨网络（手机流量 ↔ 电脑WiFi）建议加 TURN，两个页面都要加：
+  // { urls: "turn:你的TURN地址:443?transport=tcp", username: "xxx", credential: "xxx" }
+];
+
+let socket = null, stream = null, peer = null, pendingCandidates = [];
+
+const startButton = document.getElementById("start");
+const stopButton = document.getElementById("stop");
+const preview = document.getElementById("preview");
+const statusText = document.getElementById("status");
+
+const status = t => { statusText.textContent = t; };
+const send = d => { if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(d)); };
+
+function makePeer() {
+  if (peer) { peer.close(); peer = null; }
+  pendingCandidates = [];
+  peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  stream.getTracks().forEach(t => peer.addTrack(t, stream));
+  peer.onicecandidate = e => { if (e.candidate) send({ type: "candidate", candidate: e.candidate }); };
+  peer.onconnectionstatechange = () => {
+    status("连接状态：" + peer.connectionState);
+    console.log("connection:", peer.connectionState);
+  };
+}
+
+async function startLive() {
+  try {
+    startButton.disabled = true;
+    status("正在请求摄像头和麦克风权限……");
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    preview.srcObject = stream;
+
+    socket = new WebSocket(WORKER_URL.replace(/^http/, "ws") + "/room/" + encodeURIComponent(ROOM_PASSWORD));
+
+    socket.onopen = () => {
+      send({ type: "role", role: "child" });
+      status("已连接服务器，等待接收端上线……");
+      stopButton.disabled = false;
+    };
+
+    socket.onmessage = async ev => {
+      const msg = JSON.parse(ev.data);
+
+      if (msg.type === "role" && msg.role === "parent") {
+        makePeer();
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        send({ type: "offer", sdp: peer.localDescription });
+        status("接收端已在线，正在建立视频连接……");
+      }
+
+      if (msg.type === "answer" && peer) {
+        await peer.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+        for (const c of pendingCandidates) { try { await peer.addIceCandidate(c); } catch (e) {} }
+        pendingCandidates = [];
+      }
+
+      if (msg.type === "candidate" && peer) {
+        if (peer.remoteDescription) {
+          try { await peer.addIceCandidate(msg.candidate); } catch (e) { console.log(e); }
+        } else pendingCandidates.push(msg.candidate);
+      }
+
+      if (msg.type === "peer-left") status("接收端已离开，等待重新连接……");
+    };
+
+    socket.onerror = () => status("信令服务器连接失败。");
+    socket.onclose = () => status("连接已关闭。");
+  } catch (error) {
+    startButton.disabled = false;
+    if (error.name === "NotFoundError") status("无法启动：这台设备没有摄像头或麦克风，请换手机打开发送端。");
+    else if (error.name === "NotAllowedError") status("无法启动：你拒绝了摄像头/麦克风权限。");
+    else status("无法启动：" + error.name);
+  }
+}
+
+function stopLive() {
+  if (peer) { peer.close(); peer = null; }
+  if (socket) { send({ type: "stop" }); socket.close(); socket = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  preview.srcObject = null;
+  startButton.disabled = false;
+  stopButton.disabled = true;
+  status("直播已停止");
+}
+
+startButton.onclick = startLive;
+stopButton.onclick = stopLive;
+</script>
+</body>
+</html>
